@@ -24,6 +24,7 @@ var markersPerCell = gridCellWidth;
 var allAgents = new Set();
 var allMarkers = new Set();
 var cellToMarkers = new Array();
+var allMeshes = new Set();
 
 ///////////////////////////CLASSES///////////////////////////////
 
@@ -37,7 +38,7 @@ class Marker {
 
 class Agent {
     constructor(p, g) {
-        this.mesh = new THREE.Mesh(new THREE.CylinderGeometry(2, 2, 4), new THREE.MeshLambertMaterial());
+        this.mesh = new THREE.Mesh(new THREE.CylinderGeometry(1, 1, 4), new THREE.MeshLambertMaterial());
         this.mesh.position.set(p.x, 4/2, p.y);
         this.vel = new THREE.Vector2(0, 0);
         this.goal = g;
@@ -54,6 +55,7 @@ function onLoad(framework) {
     var renderer = framework.renderer;
     var gui = framework.gui;
     var stats = framework.stats;
+    var controls = framework.controls;
 
     // Set light
     var directionalLight = new THREE.DirectionalLight( 0xffffff, 1 );
@@ -72,82 +74,28 @@ function onLoad(framework) {
     ] );
     scene.background = skymap;
 
-    // set camera position
-    camera.position.set(0, 5, 0);
-    camera.lookAt(new THREE.Vector3(0,0,0));
-
-    //initialize the ground
-    var planeGeometry = new THREE.PlaneGeometry(gridWidth, gridWidth);
-    var planeMaterial = new THREE.MeshLambertMaterial({color: 0x8BA870, side: THREE.DoubleSide, shading: THREE.FlatShading });
-    var plane = new THREE.Mesh(planeGeometry, planeMaterial);
-    //apply rotation
-    plane.rotation.x = Math.PI/2;
-    plane.position.x = gridWidth/2;
-    plane.position.z = gridWidth/2;
-    plane.position.y = -0.1;
-    scene.add(plane);
-    
-    
-    //generate agents
-    for (var i = 0; i < sliders.numAgents; i++) {
-        var a = new Agent(new THREE.Vector2(Math.random()*gridWidth, Math.random()*gridWidth),
-                            new THREE.Vector2(0, 0));
-        allAgents.add(a);
-        scene.add(a.mesh);
-    }
-
-    //debugging purposes
-    var pMaterial = new THREE.PointsMaterial( { color: 0xffffff } );
-    var points = new THREE.Points(new THREE.Geometry(), pMaterial);
-    scene.add(points);
-
-    //generate markers
-    for (var cellx = 0; cellx < resolution; cellx++) {
-        cellToMarkers[cellx] = new Array();
-        for (var cellz = 0; cellz < resolution; cellz++) {
-            cellToMarkers[cellx][cellz] = new Set();
-
-            //stratified sampling in one grid cell
-            for (var i = 0; i < markersPerCell; i++) {
-                for (var j = 0; j < markersPerCell; j++) {
-                    
-                    var x = gridCellWidth*cellx + gridCellWidth/markersPerCell*i + Math.random()*gridCellWidth/markersPerCell;
-                    var z = gridCellWidth*cellz + gridCellWidth/markersPerCell*j + Math.random()*gridCellWidth/markersPerCell;
-                    var newMarker = new Marker(x, z);
-                    cellToMarkers[cellx][cellz].add(newMarker);
-                    allMarkers.add(newMarker)
-
-                    //debugging purposes
-                    points.geometry.vertices.push(new THREE.Vector3(x, 0, z));
-                }
-            }
-
-        }
-    }
+    //initialize everything for the first time
+    restart(framework);
 
     // edit params and listen to changes like this
     // more information here: https://workshop.chromeexperiments.com/examples/gui/#1--Basic-Usage
-    gui.add(camera, 'fov', 0, 180).onFinishChange(function(newVal) {
-        camera.updateProjectionMatrix();
+
+    //add numAgents slider for user to adjust
+    gui.add(sliders, 'numAgents', 50.0, 300.0).step(50.0).onFinishChange(function(newVal) {
+        restart(framework);
     });
 
     //add perception slider for user to adjust
-    //gui.add(sliders, 'perception', 0.0, 10.0).step(1.0);
+    gui.add(sliders, 'perception', 3.0, 10.0).step(1.0).onFinishChange(function(newVal) {
+        restart(framework);
+    });
+
 }
+
+/////////////////////////////////////////////////////////////////
 
 // called on frame updates
 function onUpdate(framework) {
-
-    /*
-    for (var i = framework.scene.children.length - 1; i >= 0; i--) {
-        if (framework.scene.children[i].name == "feather") {
-            var f = framework.scene.children[i];
-            f.geometry.dispose();
-            f.material.dispose();
-            framework.scene.remove(f);
-        }
-    }
-    */
 
     for (var a of allAgents.values()) {
         for (var m of a.markers.values()) {
@@ -239,25 +187,85 @@ function onUpdate(framework) {
             //update agent velocity
             a.velocity = totalVelocity;
             a.mesh.position.set(a.mesh.position.x+totalVelocity.x, a.mesh.position.y, a.mesh.position.z+totalVelocity.y);
-
-            /*
-            if (totalVelocity.x > 0.0005 && totalVelocity.y > 0.0005) {
-                a.velocity = totalVelocity;
-                a.mesh.position.set(a.mesh.position.x+totalVelocity.x, a.mesh.position.y, a.mesh.position.z+totalVelocity.y);
-            }
-            */
-            /*
-            else {
-                a.velocity = new THREE.Vector2(a.goal.x - a.mesh.position.x, a.goal.y - a.mesh.position.z).normalize().multiplyScalar(0.001);
-                a.mesh.position.set(a.mesh.position.x+a.velocity.x, a.mesh.position.y, a.mesh.position.z+a.velocity.y);
-            }
-            */
         }
     }
 
 }
 
+/////////////////////////////////////////////////////////////////
 
+function restart(framework) {
+
+    for (var mesh of allMeshes) {
+        mesh.material.dispose();
+        mesh.geometry.dispose();
+        framework.scene.remove(mesh);
+    }
+
+    gridCellWidth = sliders.perception * 2.0;
+    resolution = 10.0; 
+    gridWidth = gridCellWidth * resolution;
+    markersPerCell = gridCellWidth/(sliders.perception*0.3);
+
+    // set camera position
+    framework.camera.position.set(gridWidth/2, gridWidth, gridWidth/2);
+    framework.camera.lookAt(new THREE.Vector3(gridWidth/2,0,gridWidth/2));
+    framework.controls.target.set(gridWidth/2, 0, gridWidth/2);
+
+    //initialize the ground
+    var planeGeometry = new THREE.PlaneGeometry(gridWidth, gridWidth);
+    var planeMaterial = new THREE.MeshLambertMaterial({color: 0x696969, side: THREE.DoubleSide, shading: THREE.FlatShading });
+    var plane = new THREE.Mesh(planeGeometry, planeMaterial);
+    //apply rotation
+    plane.rotation.x = Math.PI/2;
+    plane.position.x = gridWidth/2;
+    plane.position.z = gridWidth/2;
+    plane.position.y = -0.1;
+    framework.scene.add(plane);
+    allMeshes.add(plane);
+    
+    allAgents.clear();
+    //generate agents
+    for (var i = 0; i < sliders.numAgents; i++) {
+        var a = new Agent(new THREE.Vector2(Math.random()*gridWidth, Math.random()*gridWidth),
+                            new THREE.Vector2(0, 0));
+        allAgents.add(a);
+        framework.scene.add(a.mesh);
+        allMeshes.add(a.mesh);
+    }
+
+    //debugging purposes
+    var pMaterial = new THREE.PointsMaterial( { color: 0XA9A9A9 } );
+    var points = new THREE.Points(new THREE.Geometry(), pMaterial);
+    framework.scene.add(points);
+    allMeshes.add(points);
+
+    allMarkers.clear();
+    //generate markers
+    for (var cellx = 0; cellx < resolution; cellx++) {
+        cellToMarkers[cellx] = new Array();
+        for (var cellz = 0; cellz < resolution; cellz++) {
+            cellToMarkers[cellx][cellz] = new Set();
+
+            //stratified sampling in one grid cell
+            for (var i = 0; i < markersPerCell; i++) {
+                for (var j = 0; j < markersPerCell; j++) {
+                    
+                    var x = gridCellWidth*cellx + gridCellWidth/markersPerCell*i + Math.random()*gridCellWidth/markersPerCell;
+                    var z = gridCellWidth*cellz + gridCellWidth/markersPerCell*j + Math.random()*gridCellWidth/markersPerCell;
+                    var newMarker = new Marker(x, z);
+                    cellToMarkers[cellx][cellz].add(newMarker);
+                    allMarkers.add(newMarker);
+
+                    //debugging purposes
+                    points.geometry.vertices.push(new THREE.Vector3(x, 0, z));
+                }
+            }
+
+        }
+    }
+
+}
 
 // when the scene is done initializing, it will call onLoad, then on frame updates, call onUpdate
 Framework.init(onLoad, onUpdate);
