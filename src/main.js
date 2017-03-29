@@ -9,22 +9,25 @@ var startTime = Date.now();
 ///////////////////////////SLIDERS///////////////////////////////
 
 var Sliders = function() {
+    this.scenario = 1;
     this.numAgents = 100;
-    this.perception = 10;
+    this.perception = 5;
 };
 var sliders = new Sliders();
 
 ///////////////////////DATA STRUCTURES///////////////////////////
 
-var gridCellWidth = sliders.perception * 2.0;
-var resolution = 10.0; 
-var gridWidth = gridCellWidth * resolution;
-var markersPerCell = gridCellWidth;
+var radius = 1.0;
+var gridCellWidth;
+var resolution; 
+var gridWidth;
+var markersPerCell;
 
 var allAgents = new Set();
 var allMarkers = new Set();
 var cellToMarkers = new Array();
 var allMeshes = new Set();
+var lines = new THREE.LineSegments();
 
 ///////////////////////////CLASSES///////////////////////////////
 
@@ -38,7 +41,21 @@ class Marker {
 
 class Agent {
     constructor(p, g) {
-        this.mesh = new THREE.Mesh(new THREE.CylinderGeometry(1, 1, 4), new THREE.MeshLambertMaterial());
+        this.mesh = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, 4), 
+            new THREE.ShaderMaterial( {
+              uniforms: {
+                /*
+                  // float initialized to 0
+                  time: { type: "f", value: 0.0 },
+                  // float initialized to 0
+                  freq: { type: "f", value: 0.0 },
+                  //float initialized to 25
+                  amp: { type: "f", value: 10.0 }
+                */
+              },
+              vertexShader: require('./shaders/iridescence-vert.glsl'),
+              fragmentShader: require('./shaders/iridescence-frag.glsl')
+            }));
         this.mesh.position.set(p.x, 4/2, p.y);
         this.vel = new THREE.Vector2(0, 0);
         this.goal = g;
@@ -80,13 +97,17 @@ function onLoad(framework) {
     // edit params and listen to changes like this
     // more information here: https://workshop.chromeexperiments.com/examples/gui/#1--Basic-Usage
 
+    gui.add(sliders, 'scenario', { Standoff: 1, FourCorners: 2, OneCorner: 3 } ).name("scenario").onFinishChange(function(newVal) {
+            restart(framework);
+    });  
+
     //add numAgents slider for user to adjust
     gui.add(sliders, 'numAgents', 50.0, 300.0).step(50.0).onFinishChange(function(newVal) {
         restart(framework);
     });
 
     //add perception slider for user to adjust
-    gui.add(sliders, 'perception', 3.0, 10.0).step(1.0).onFinishChange(function(newVal) {
+    gui.add(sliders, 'perception', 5.0, 10.0).step(1.0).onFinishChange(function(newVal) {
         restart(framework);
     });
 
@@ -125,8 +146,8 @@ function onUpdate(framework) {
                     //iterate through markers in cell
                     for (var marker of markerSet.values()) {
                         var markerPos = new THREE.Vector3(marker.pos.x, 0, marker.pos.y);
-                        //check if marker within perception field of agent
-                        //and if marker.agent is null OR new agent is closer to marker than old agent
+                        //check if marker within perception field of agent AND
+                        //if marker.agent is null OR new agent is closer to marker than old agent
                         //set marker.agent to new agent
                         if (markerPos.distanceTo(a.mesh.position) <= sliders.perception &&
                             ( marker.agent == null || markerPos.distanceTo(a.mesh.position) < markerPos.distanceTo(marker.agent.mesh.position) )) {
@@ -149,23 +170,26 @@ function onUpdate(framework) {
     }
     
     /*
-    //debugging purposes
-    var lineMaterial = new THREE.LineBasicMaterial({color: 0xffffff, linewidth: 10});
-    var lineGeom = new THREE.Geometry();
+    //debugging purposes, draw marker lines
+    lines.material.dispose();
+    lines.geometry.dispose();
+    framework.scene.remove(lines);
+    var linesMaterial = new THREE.LineBasicMaterial({color: 0xffffff, linewidth: 10});
+    var linesGeom = new THREE.Geometry();
     for (var a of allAgents.values()) {
         for (var m of a.markers.values()) {
-            lineGeom.vertices.push(new THREE.Vector3(a.mesh.position.x, a.mesh.position.y, a.mesh.position.z));
-            lineGeom.vertices.push(new THREE.Vector3(m.pos.x, 0, m.pos.y));
+            linesGeom.vertices.push(new THREE.Vector3(a.mesh.position.x, a.mesh.position.y, a.mesh.position.z));
+            linesGeom.vertices.push(new THREE.Vector3(m.pos.x, 0, m.pos.y));
         }
     }
-    var line = new THREE.LineSegments( lineGeom, lineMaterial );
-    framework.scene.add(line);
+    lines = new THREE.LineSegments( linesGeom, linesMaterial );
+    framework.scene.add(lines);
     */
     
-
+    //perform biocrowd algorithm
     for (var a of allAgents.values()) {
 
-        if (a.goal.distanceTo(new THREE.Vector2(a.mesh.position.x, a.mesh.position.z)) > 0.1) {
+        if (a.goal.distanceTo(new THREE.Vector2(a.mesh.position.x, a.mesh.position.z)) > 1) {
             var totalWeights = 0.0;
             //accumulate marker influences
             for (var marker of a.markers.values()) {
@@ -196,16 +220,18 @@ function onUpdate(framework) {
 
 function restart(framework) {
 
+    //disposes all meshses of markers, agents, and plane
     for (var mesh of allMeshes) {
         mesh.material.dispose();
         mesh.geometry.dispose();
         framework.scene.remove(mesh);
     }
 
-    gridCellWidth = sliders.perception * 2.0;
+    gridCellWidth = (sliders.perception+1.0) * 2.0;
     resolution = 10.0; 
     gridWidth = gridCellWidth * resolution;
-    markersPerCell = gridCellWidth/(sliders.perception*0.3);
+    //markersPerCell = gridCellWidth/(sliders.perception*0.1) * (sliders.numAgents/50.0);
+    markersPerCell = gridCellWidth;
 
     // set camera position
     framework.camera.position.set(gridWidth/2, gridWidth, gridWidth/2);
@@ -224,14 +250,16 @@ function restart(framework) {
     framework.scene.add(plane);
     allMeshes.add(plane);
     
+    //clear old agents and setup new agents
     allAgents.clear();
-    //generate agents
-    for (var i = 0; i < sliders.numAgents; i++) {
-        var a = new Agent(new THREE.Vector2(Math.random()*gridWidth, Math.random()*gridWidth),
-                            new THREE.Vector2(0, 0));
-        allAgents.add(a);
-        framework.scene.add(a.mesh);
-        allMeshes.add(a.mesh);
+    if (sliders.scenario == 1) {
+        setupAgents1(framework);
+    }
+    else if (sliders.scenario == 2) {
+        setupAgents2(framework);
+    }
+    else {
+        setupAgents3(framework);
     }
 
     //debugging purposes
@@ -251,8 +279,10 @@ function restart(framework) {
             for (var i = 0; i < markersPerCell; i++) {
                 for (var j = 0; j < markersPerCell; j++) {
                     
-                    var x = gridCellWidth*cellx + gridCellWidth/markersPerCell*i + Math.random()*gridCellWidth/markersPerCell;
-                    var z = gridCellWidth*cellz + gridCellWidth/markersPerCell*j + Math.random()*gridCellWidth/markersPerCell;
+                    //var x = gridCellWidth*cellx + gridCellWidth/markersPerCell*i + Math.random()*gridCellWidth/markersPerCell;
+                    //var z = gridCellWidth*cellz + gridCellWidth/markersPerCell*j + Math.random()*gridCellWidth/markersPerCell;
+                    var x = gridCellWidth*cellx + i;
+                    var z = gridCellWidth*cellz + j;
                     var newMarker = new Marker(x, z);
                     cellToMarkers[cellx][cellz].add(newMarker);
                     allMarkers.add(newMarker);
@@ -266,6 +296,78 @@ function restart(framework) {
     }
 
 }
+
+/////////////////////////////////////////////////////////////////
+
+function setupAgents1(framework) {
+
+    for (var i = 0; i < sliders.numAgents/2; i++) {
+        var zpos = Math.random()*(gridWidth - radius);
+        var a = new Agent(new THREE.Vector2(0 + radius, zpos),
+                            new THREE.Vector2(gridWidth - radius, zpos));
+        allAgents.add(a);
+        framework.scene.add(a.mesh);
+        allMeshes.add(a.mesh);
+    }
+
+    for (var i = 0; i < sliders.numAgents/2; i++) {
+        var zpos = Math.random()*(gridWidth - radius);
+        var a = new Agent(new THREE.Vector2(gridWidth - radius, zpos),
+                            new THREE.Vector2(0 + radius, zpos));
+        allAgents.add(a);
+        framework.scene.add(a.mesh);
+        allMeshes.add(a.mesh);
+    }
+}
+
+function setupAgents2(framework) {
+
+    var cornerWidth = gridWidth / 9.0;
+
+    for (var i = 0; i < sliders.numAgents / 4.0; i++) {
+        var a = new Agent(new THREE.Vector2(radius + Math.random()*cornerWidth, radius + Math.random()*cornerWidth),
+                            new THREE.Vector2(gridWidth - radius, gridWidth - radius));
+        allAgents.add(a);
+        framework.scene.add(a.mesh);
+        allMeshes.add(a.mesh);
+    }
+
+    for (var i = 0; i < sliders.numAgents / 4.0; i++) {
+        var a = new Agent(new THREE.Vector2(gridWidth - radius - cornerWidth + Math.random()*cornerWidth, radius + Math.random()*cornerWidth),
+                            new THREE.Vector2(0 + radius, gridWidth - radius));
+        allAgents.add(a);
+        framework.scene.add(a.mesh);
+        allMeshes.add(a.mesh);
+    }
+
+    for (var i = 0; i < sliders.numAgents / 4.0; i++) {
+        var a = new Agent(new THREE.Vector2(radius + Math.random()*cornerWidth, gridWidth - radius - cornerWidth + Math.random()*cornerWidth),
+                            new THREE.Vector2(gridWidth - radius, 0 + radius));
+        allAgents.add(a);
+        framework.scene.add(a.mesh);
+        allMeshes.add(a.mesh);
+    }
+
+    for (var i = 0; i < sliders.numAgents / 4.0; i++) {
+        var a = new Agent(new THREE.Vector2(gridWidth - radius - cornerWidth + Math.random()*cornerWidth, gridWidth - radius - cornerWidth + Math.random()*cornerWidth),
+                            new THREE.Vector2(0 + radius, radius));
+        allAgents.add(a);
+        framework.scene.add(a.mesh);
+        allMeshes.add(a.mesh);
+    }
+}
+
+function setupAgents3(framework) {
+    //generate agents
+    for (var i = 0; i < sliders.numAgents; i++) {
+        var a = new Agent(new THREE.Vector2(Math.random()*gridWidth, Math.random()*gridWidth),
+                            new THREE.Vector2(0, 0));
+        allAgents.add(a);
+        framework.scene.add(a.mesh);
+        allMeshes.add(a.mesh);
+    }
+}
+
 
 // when the scene is done initializing, it will call onLoad, then on frame updates, call onUpdate
 Framework.init(onLoad, onUpdate);
