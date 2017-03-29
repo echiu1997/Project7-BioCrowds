@@ -9,7 +9,7 @@ var startTime = Date.now();
 ///////////////////////////SLIDERS///////////////////////////////
 
 var Sliders = function() {
-    this.numAgents = 10;
+    this.numAgents = 100;
     this.perception = 10;
 };
 var sliders = new Sliders();
@@ -17,9 +17,9 @@ var sliders = new Sliders();
 ///////////////////////DATA STRUCTURES///////////////////////////
 
 var gridCellWidth = sliders.perception * 2.0;
-var resolution = 5.0; 
+var resolution = 10.0; 
 var gridWidth = gridCellWidth * resolution;
-var markersPerCell = gridCellWidth / 2.0;
+var markersPerCell = gridCellWidth;
 
 var allAgents = new Set();
 var allMarkers = new Set();
@@ -31,14 +31,15 @@ class Marker {
     constructor(x, z) {
         this.pos = new THREE.Vector2(x, z);
         this.agent = null;
+        this.weight = 0.0;
     }
 };
 
 class Agent {
-    constructor(p, v, g) {
+    constructor(p, g) {
         this.mesh = new THREE.Mesh(new THREE.CylinderGeometry(2, 2, 4), new THREE.MeshLambertMaterial());
-        this.mesh.position.set(p.x, 4/2, p.z);
-        this.vel = v;
+        this.mesh.position.set(p.x, 4/2, p.y);
+        this.vel = new THREE.Vector2(0, 0);
         this.goal = g;
         this.markers = new Set();
     }
@@ -75,21 +76,22 @@ function onLoad(framework) {
     camera.position.set(0, 5, 0);
     camera.lookAt(new THREE.Vector3(0,0,0));
 
-    /*
     //initialize the ground
     var planeGeometry = new THREE.PlaneGeometry(gridWidth, gridWidth);
     var planeMaterial = new THREE.MeshLambertMaterial({color: 0x8BA870, side: THREE.DoubleSide, shading: THREE.FlatShading });
     var plane = new THREE.Mesh(planeGeometry, planeMaterial);
     //apply rotation
-    plane.applyMatrix(new THREE.Matrix4().makeRotationFromQuaternion(
-    new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1.0, 0.0, 0.0), -Math.PI/2.0)
-    ));
+    plane.rotation.x = Math.PI/2;
+    plane.position.x = gridWidth/2;
+    plane.position.z = gridWidth/2;
+    plane.position.y = -0.1;
     scene.add(plane);
-    */
+    
     
     //generate agents
     for (var i = 0; i < sliders.numAgents; i++) {
-        var a = new Agent(new THREE.Vector3(Math.random()*gridWidth, 0, Math.random()*gridWidth));
+        var a = new Agent(new THREE.Vector2(Math.random()*gridWidth, Math.random()*gridWidth),
+                            new THREE.Vector2(0, 0));
         allAgents.add(a);
         scene.add(a.mesh);
     }
@@ -121,6 +123,38 @@ function onLoad(framework) {
             }
 
         }
+    }
+
+    // edit params and listen to changes like this
+    // more information here: https://workshop.chromeexperiments.com/examples/gui/#1--Basic-Usage
+    gui.add(camera, 'fov', 0, 180).onFinishChange(function(newVal) {
+        camera.updateProjectionMatrix();
+    });
+
+    //add perception slider for user to adjust
+    //gui.add(sliders, 'perception', 0.0, 10.0).step(1.0);
+}
+
+// called on frame updates
+function onUpdate(framework) {
+
+    /*
+    for (var i = framework.scene.children.length - 1; i >= 0; i--) {
+        if (framework.scene.children[i].name == "feather") {
+            var f = framework.scene.children[i];
+            f.geometry.dispose();
+            f.material.dispose();
+            framework.scene.remove(f);
+        }
+    }
+    */
+
+    for (var a of allAgents.values()) {
+        for (var m of a.markers.values()) {
+            m.agent = null;
+            m.weight = 0.0;
+        }
+        a.markers.clear();
     }
 
     //for each agent, find 4 closest cells
@@ -159,13 +193,14 @@ function onLoad(framework) {
     }
 
     //add all markers with an assigned agent to the respective agent
-    //O(m) time, compared to removing markers set of replaced agent above, which is O(m log(m))
+    //O(m) time, instead of removing markers from set of replaced agent above, which is O(m log(m))
     for (var m of allMarkers.values()) {
         if (m.agent != null) {
             m.agent.markers.add(m);
         }
     }
     
+    /*
     //debugging purposes
     var lineMaterial = new THREE.LineBasicMaterial({color: 0xffffff, linewidth: 10});
     var lineGeom = new THREE.Geometry();
@@ -176,86 +211,53 @@ function onLoad(framework) {
         }
     }
     var line = new THREE.LineSegments( lineGeom, lineMaterial );
-    scene.add(line);
+    framework.scene.add(line);
+    */
     
 
+    for (var a of allAgents.values()) {
 
-    // edit params and listen to changes like this
-    // more information here: https://workshop.chromeexperiments.com/examples/gui/#1--Basic-Usage
-    gui.add(camera, 'fov', 0, 180).onFinishChange(function(newVal) {
-        camera.updateProjectionMatrix();
-    });
+        if (a.goal.distanceTo(new THREE.Vector2(a.mesh.position.x, a.mesh.position.z)) > 0.1) {
+            var totalWeights = 0.0;
+            //accumulate marker influences
+            for (var marker of a.markers.values()) {
+                var g = new THREE.Vector2(a.goal.x - a.mesh.position.x, a.goal.y - a.mesh.position.z);
+                var m = new THREE.Vector2(marker.pos.x - a.mesh.position.x, marker.pos.y - a.mesh.position.z);
+                marker.weight = (1.0 + ( g.dot(m) / (g.length() * m.length()))) / (1.0 + m.length());
+                totalWeights += marker.weight;
+            }
 
-    //add perception slider for user to adjust
-    //gui.add(sliders, 'perception', 0.0, 10.0).step(1.0);
-}
+            var totalVelocity = new THREE.Vector2(0.0, 0.0);
+            for (var marker of a.markers.values()) {
 
-// called on frame updates
-function onUpdate(framework) {
+                var v = new THREE.Vector2(marker.pos.x - a.mesh.position.x, marker.pos.y - a.mesh.position.z); 
+                v.multiplyScalar(marker.weight);
+                v.divideScalar(totalWeights);
+                totalVelocity.add(v);
+            }
 
-    /*
-    for (var i = framework.scene.children.length - 1; i >= 0; i--) {
-        if (framework.scene.children[i].name == "feather") {
-            var f = framework.scene.children[i];
-            f.geometry.dispose();
-            f.material.dispose();
-            framework.scene.remove(f);
+            //update agent velocity
+            a.velocity = totalVelocity;
+            a.mesh.position.set(a.mesh.position.x+totalVelocity.x, a.mesh.position.y, a.mesh.position.z+totalVelocity.y);
+
+            /*
+            if (totalVelocity.x > 0.0005 && totalVelocity.y > 0.0005) {
+                a.velocity = totalVelocity;
+                a.mesh.position.set(a.mesh.position.x+totalVelocity.x, a.mesh.position.y, a.mesh.position.z+totalVelocity.y);
+            }
+            */
+            /*
+            else {
+                a.velocity = new THREE.Vector2(a.goal.x - a.mesh.position.x, a.goal.y - a.mesh.position.z).normalize().multiplyScalar(0.001);
+                a.mesh.position.set(a.mesh.position.x+a.velocity.x, a.mesh.position.y, a.mesh.position.z+a.velocity.y);
+            }
+            */
         }
     }
-    */
 
-    /*
-    //bottom curve
-    curve1 = new THREE.CubicBezierCurve3(
-        new THREE.Vector3( 0, 0, -5 ),
-        new THREE.Vector3( -2 - 2.0 * sliders.curvature, 0, 0 ),
-        new THREE.Vector3( 2 + 2.0 * sliders.curvature, sliders.flapmotion/2.0 * sin(2, 0, (sliders.flapspeed * 0.003) * (Date.now()-startTime)) , 0 ),
-        new THREE.Vector3( 0, sliders.flapmotion * sin(2, 0, (sliders.flapspeed * 0.003) * (Date.now()-startTime)) - 0.20*sliders.flapmotion, 5 )
-    );
-
-    //top curve
-    curve2 = new THREE.CubicBezierCurve3(
-        new THREE.Vector3( 0, 0.1, -5 ),
-        new THREE.Vector3( -2 - 2.0 * sliders.curvature, 1, 0 ),
-        new THREE.Vector3( 2 + 2.0 * sliders.curvature, sliders.flapmotion/2.0 * sin(2, 0, (sliders.flapspeed * 0.003) * (Date.now()-startTime)) + 0.2, 0 ),
-        new THREE.Vector3( 0, sliders.flapmotion * sin(2, 0, (sliders.flapspeed * 0.003) * (Date.now()-startTime)), 5 )
-    );
-
-    for (var layer = 0.0; layer <= 1.0; layer += 0.5) {
-
-        //interpolate feather scaling base for each layer, numbers chosen myself
-        var scaleBase = 1.0 * (1.0 - layer) + 0.5 * layer;
-        //interpolate feather scaling factor (max scaling), numbers chosen myself
-        var scaleFactor = (2.0*sliders.size) * (1.0 - layer) + (0.5*sliders.size) * layer;
-        //interpolate feather distribution, numbers chosen myself
-        var featherDistribution = (0.05/sliders.distribution) * (1.0 - layer) + (0.025/sliders.distribution) * layer;
-        //interpolate feather color darkness
-        var darkness = 0.8 * (1.0 - layer) + 0.2 * layer;
-
-        for (var i = 0.0; i <= 1.0; i += featherDistribution) {
-            
-            var featherMesh = new THREE.Mesh(featherGeo, new THREE.MeshLambertMaterial({ side: THREE.DoubleSide }));
-            featherMesh.name = "feather";
-
-            featherMesh.material.color.setRGB(darkness*sliders.color, darkness*sliders.color, darkness*1.0);
-
-            var y = curve1.getPointAt(i).y * (1.0 - layer) + curve2.getPointAt(i).y * layer;
-            featherMesh.position.set(curve1.getPointAt(i).x, y, curve1.getPointAt(i).z);
-
-            featherMesh.rotateY(180.0 * Math.PI/180.0);
-            featherMesh.rotateY(gain(0.5, i)*sliders.orientation*Math.PI/180.0);
-
-            var scalar = scaleBase + gain(0.5, i)*scaleFactor;
-            featherMesh.scale.set(scalar, scalar, scalar);
-
-            //animation for wind turbulence
-            featherMesh.rotateZ((sliders.turbulence)*Math.PI/180.0 * sin(2, featherMesh.position.x, (sliders.turbulence * 0.003)*(Date.now()-startTime)));
-
-            framework.scene.add(featherMesh);
-        }
-    }
-    */   
 }
+
+
 
 // when the scene is done initializing, it will call onLoad, then on frame updates, call onUpdate
 Framework.init(onLoad, onUpdate);
